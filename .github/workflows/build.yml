@@ -24,22 +24,20 @@ jobs:
           packages: 'platform-tools'
 
       - name: Accept Android licenses
-        run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Install SDK packages
-        run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Setup Gradle Wrapper
         run: gradle wrapper --gradle-version 8.9
 
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --stacktrace
+      - name: Build Debug APK (signed, installable)
+        run: ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: wireless-loader-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
