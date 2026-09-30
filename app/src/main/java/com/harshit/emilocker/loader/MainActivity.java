@@ -18,8 +18,9 @@ public class MainActivity extends AppCompatActivity {
     private EditText etIp, etPairPort, etCode, etConnectPort;
     private TextView tvStatus;
     private Button btnPair, btnConnect, btnGrant;
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Handler main = new Handler(Looper.getMainLooper());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,73 +36,93 @@ public class MainActivity extends AppCompatActivity {
         btnConnect = findViewById(R.id.btnConnect);
         btnGrant = findViewById(R.id.btnGrant);
 
-        btnPair.setOnClickListener(v -> doPair());
-        btnConnect.setOnClickListener(v -> doConnect());
-        btnGrant.setOnClickListener(v -> doGrant());
+        btnPair.setOnClickListener(v -> runPair());
+        btnConnect.setOnClickListener(v -> runConnect());
+        btnGrant.setOnClickListener(v -> runGrant());
+
+        setStatus("1) कस्टमर फोन: Customer App इंस्टॉल\n"
+                + "2) Wireless debugging → Pair device with pairing code\n"
+                + "3) IP + Pairing Port + 6-digit Code डालो → PAIR\n"
+                + "4) Connect Port डालो → CONNECT\n"
+                + "5) GRANT OWNERSHIP\n\n"
+                + "नोट: कस्टमर फोन पर Google/Mi अकाउंट न हो।");
     }
 
-    private void setStatus(String msg) {
-        mainHandler.post(() -> tvStatus.setText(msg));
+    private void setStatus(String s) {
+        main.post(() -> tvStatus.setText(s));
     }
 
-    private void doPair() {
-        String ip = etIp.getText().toString().trim();
-        String port = etPairPort.getText().toString().trim();
-        String code = etCode.getText().toString().trim();
-
-        if (ip.isEmpty() || port.isEmpty() || code.length() != 6) {
-            Toast.makeText(this, "IP, Pairing Port और 6-digit Code भरें", Toast.LENGTH_SHORT).show();
-            return;
-        }
-
-        btnPair.setEnabled(false);
-        setStatus("Pairing...");
-
-        executor.execute(() -> {
-            AdbHelper.Result r = AdbHelper.pair(ip, port, code);
-            setStatus("PAIR:\n" + r.output + "\n\nexit=" + r.exitCode);
-            mainHandler.post(() -> btnPair.setEnabled(true));
+    private void setBusy(boolean busy) {
+        main.post(() -> {
+            btnPair.setEnabled(!busy);
+            btnConnect.setEnabled(!busy);
+            btnGrant.setEnabled(!busy);
         });
     }
 
-    private void doConnect() {
+    private void runPair() {
         String ip = etIp.getText().toString().trim();
-        String port = etConnectPort.getText().toString().trim();
+        String portStr = etPairPort.getText().toString().trim();
+        String code = etCode.getText().toString().trim();
 
-        if (ip.isEmpty() || port.isEmpty()) {
+        if (ip.isEmpty() || portStr.isEmpty() || code.length() != 6) {
+            Toast.makeText(this, "IP, Pairing Port, 6-digit Code भरें", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (Exception e) {
+            Toast.makeText(this, "Invalid pairing port", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        setBusy(true);
+        setStatus("Pairing...");
+
+        executor.execute(() -> {
+            AdbHelper.Result r = AdbHelper.pair(this, ip, port, code);
+            setStatus(r.message);
+            setBusy(false);
+        });
+    }
+
+    private void runConnect() {
+        String ip = etIp.getText().toString().trim();
+        String portStr = etConnectPort.getText().toString().trim();
+
+        if (ip.isEmpty() || portStr.isEmpty()) {
             Toast.makeText(this, "IP और Connect Port भरें", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        btnConnect.setEnabled(false);
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (Exception e) {
+            Toast.makeText(this, "Invalid connect port", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        setBusy(true);
         setStatus("Connecting...");
 
         executor.execute(() -> {
-            AdbHelper.Result r = AdbHelper.connect(ip, port);
-            AdbHelper.Result devices = AdbHelper.devices();
-            setStatus("CONNECT:\n" + r.output + "\n\nDEVICES:\n" + devices.output);
-            mainHandler.post(() -> btnConnect.setEnabled(true));
+            AdbHelper.Result r = AdbHelper.connect(this, ip, port);
+            setStatus(r.message);
+            setBusy(false);
         });
     }
 
-    private void doGrant() {
-        btnGrant.setEnabled(false);
-        setStatus("Setting Device Owner...\n\nनोट: फोन पर Google/Mi अकाउंट न हो तो ही success मिलेगा।");
+    private void runGrant() {
+        setBusy(true);
+        setStatus("Setting Device Owner...\ncom.harshit.emilocker.customer/.MyAdminReceiver");
 
         executor.execute(() -> {
-            AdbHelper.Result r = AdbHelper.setDeviceOwner();
-            String msg = "GRANT OWNERSHIP:\n" + r.output + "\n\nexit=" + r.exitCode;
-            if (r.ok() || (r.output != null && r.output.toLowerCase().contains("success"))) {
-                msg += "\n\n✅ Success! अब Customer App खोलें और Dealer Sync QR स्कैन करें।";
-            } else {
-                msg += "\n\n❌ Fail हो सकता है अगर:\n"
-                        + "• adb इस फोन पर उपलब्ध नहीं\n"
-                        + "• कस्टमर फोन पर अकाउंट लगा है\n"
-                        + "• पहले से कोई Device Owner है\n"
-                        + "• Customer App इंस्टॉल नहीं";
-            }
-            setStatus(msg);
-            mainHandler.post(() -> btnGrant.setEnabled(true));
+            AdbHelper.Result r = AdbHelper.grantOwnership(this);
+            setStatus(r.message);
+            setBusy(false);
         });
     }
 
