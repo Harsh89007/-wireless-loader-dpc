@@ -1,69 +1,104 @@
 package com.harshit.emilocker.loader;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.util.concurrent.TimeUnit;
+import android.content.Context;
 
-/**
- * Phase 1: ADB commands via shell.
- * Production में adb binary APK के अंदर (jniLibs/arm64-v8a) रखना बेहतर है।
- * अभी Runtime exec से try — डीलर फोन पर adb PATH में हो (Termux) तो काम करेगा।
- */
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+import io.github.muntashirakon.adb.AbsAdbConnectionManager;
+import io.github.muntashirakon.adb.AdbStream;
+
 public class AdbHelper {
 
+    public static final String TARGET_OWNER =
+            "com.harshit.emilocker.customer/.MyAdminReceiver";
+
     public static class Result {
-        public final int exitCode;
-        public final String output;
+        public final boolean ok;
+        public final String message;
 
-        public Result(int exitCode, String output) {
-            this.exitCode = exitCode;
-            this.output = output;
-        }
-
-        public boolean ok() {
-            return exitCode == 0;
+        public Result(boolean ok, String message) {
+            this.ok = ok;
+            this.message = message;
         }
     }
 
-    public static Result run(String... cmd) {
-        StringBuilder out = new StringBuilder();
+    public static Result pair(Context context, String host, int pairPort, String code) {
         try {
-            ProcessBuilder pb = new ProcessBuilder(cmd);
-            pb.redirectErrorStream(true);
-            Process p = pb.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String line;
-            while ((line = reader.readLine()) != null) {
-                out.append(line).append("\n");
+            AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
+            boolean success = mgr.pair(host, pairPort, code);
+            if (success) {
+                return new Result(true, "Pairing successful ✅\nअब Connect Port डालकर CONNECT दबाएँ।");
             }
-            boolean finished = p.waitFor(60, TimeUnit.SECONDS);
-            if (!finished) {
-                p.destroyForcibly();
-                return new Result(-1, out + "\nTimeout");
-            }
-            return new Result(p.exitValue(), out.toString().trim());
+            return new Result(false, "Pairing failed ❌\nCode/Port चेक करें। Pairing dialog खुला होना चाहिए।");
         } catch (Exception e) {
-            return new Result(-1, "Error: " + e.getMessage());
+            return new Result(false, "Pair error:\n" + e.getMessage());
         }
     }
 
-    public static Result pair(String ip, String port, String code) {
-        // adb pair IP:PORT CODE
-        return run("adb", "pair", ip + ":" + port, code);
+    public static Result connect(Context context, String host, int connectPort) {
+        try {
+            AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
+            mgr.setHostAddress(host);
+            boolean connected = mgr.connect(connectPort);
+            if (connected) {
+                return new Result(true, "Connected ✅\nअब GRANT OWNERSHIP दबाएँ।");
+            }
+            return new Result(false, "Connect failed ❌\nConnect Port गलत हो सकता है।");
+        } catch (Exception e) {
+            return new Result(false, "Connect error:\n" + e.getMessage());
+        }
     }
 
-    public static Result connect(String ip, String port) {
-        return run("adb", "connect", ip + ":" + port);
-    }
+    public static Result grantOwnership(Context context) {
+        try {
+            AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
+            // shell:dpm set-device-owner ...
+            String cmd = "dpm set-device-owner " + TARGET_OWNER;
+            AdbStream stream = mgr.openStream("shell:" + cmd);
 
-    public static Result setDeviceOwner() {
-        return run(
-                "adb", "shell", "dpm", "set-device-owner",
-                "com.harshit.emilocker.customer/.MyAdminReceiver"
-        );
-    }
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            InputStream in = stream.openInputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            long end = System.currentTimeMillis() + 15000;
+            while (System.currentTimeMillis() < end && (n = in.read(buf)) != -1) {
+                if (n > 0) bos.write(buf, 0, n);
+            }
+            try { stream.close(); } catch (Exception ignored) {}
 
-    public static Result devices() {
-        return run("adb", "devices");
+            String out = bos.toString(StandardCharsets.UTF_8.name()).trim();
+            String lower = out.toLowerCase();
+
+            if (lower.contains("success")
+                    || lower.contains("device owner set")
+                    || out.isEmpty()) {
+                // कुछ devices खाली output + success देते हैं
+                boolean likelyOk = out.isEmpty() || lower.contains("success") || lower.contains("device owner");
+                if (likelyOk) {
+                    return new Result(true,
+                            "Ownership command sent ✅\n\nOutput:\n" + (out.isEmpty() ? "(empty)" : out)
+                                    + "\n\nअब Customer App खोलें और Dealer Sync QR स्कैन करें।");
+                }
+            }
+
+            if (lower.contains("already the device owner")) {
+                return new Result(true, "पहले से Device Owner है ✅\n" + out);
+            }
+            if (lower.contains("account")) {
+                return new Result(false,
+                        "Fail: फोन पर अकाउंट लगा है।\nSettings → Accounts हटाएँ या factory reset करें।\n\n" + out);
+            }
+            if (lower.contains("not allowed") || lower.contains("provisioning")) {
+                return new Result(false,
+                        "Fail: इस स्टेट में Device Owner set नहीं हो सकता।\nFactory reset के बाद (बिना अकाउंट) ट्राई करें।\n\n" + out);
+            }
+
+            return new Result(false, "set-device-owner result:\n" + (out.isEmpty() ? "(no output)" : out));
+        } catch (Exception e) {
+            return new Result(false, "Grant error:\n" + e.getMessage()
+                    + "\n\nपहले PAIR और CONNECT सफल होना चाहिए।");
+        }
     }
 }
