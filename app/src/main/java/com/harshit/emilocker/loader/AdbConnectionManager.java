@@ -46,9 +46,9 @@ public class AdbConnectionManager extends AbsAdbConnectionManager {
     private Certificate mCertificate;
 
     private AdbConnectionManager(Context context) throws Exception {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.addProvider(new BouncyCastleProvider());
-        }
+        // Android का broken BC हटाकर पूरा BC
+        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+        Security.insertProviderAt(new BouncyCastleProvider(), 1);
 
         setApi(Build.VERSION.SDK_INT);
 
@@ -74,13 +74,12 @@ public class AdbConnectionManager extends AbsAdbConnectionManager {
                     name,
                     kp.getPublic()
             );
-            ContentSigner signer = new JcaContentSignerBuilder("SHA256WithRSA")
-                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
+
+            // Provider "BC" force मत करो — default (हमारा full BC) use होगा
+            ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
                     .build(mPrivateKey);
             X509CertificateHolder holder = builder.build(signer);
-            mCertificate = new JcaX509CertificateConverter()
-                    .setProvider(BouncyCastleProvider.PROVIDER_NAME)
-                    .getCertificate(holder);
+            mCertificate = new JcaX509CertificateConverter().getCertificate(holder);
 
             writeBytes(keyFile, mPrivateKey.getEncoded());
             writeBytes(certFile, mCertificate.getEncoded());
