@@ -6,10 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
     <application
+        android:name=".LoaderApp"
         android:allowBackup="false"
         android:icon="@android:drawable/ic_lock_lock"
         android:label="Wireless Loader DPC"
-        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
