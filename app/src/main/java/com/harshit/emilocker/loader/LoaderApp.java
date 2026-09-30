@@ -15,23 +15,23 @@ public class LoaderApp extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+
+        // Android का टूटा BC हटाओ, पूरा BC लगाओ
         try {
-            // Wireless ADB pairing / TLS के लिए जरूरी
+            Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+            Security.insertProviderAt(new BouncyCastleProvider(), 1);
+            Log.i(TAG, "BouncyCastle installed at 1");
+        } catch (Throwable t) {
+            Log.e(TAG, "BouncyCastle failed", t);
+        }
+
+        try {
             if (Security.getProvider("Conscrypt") == null) {
                 Security.insertProviderAt(Conscrypt.newProvider(), 1);
                 Log.i(TAG, "Conscrypt installed");
             }
         } catch (Throwable t) {
             Log.e(TAG, "Conscrypt failed", t);
-        }
-
-        try {
-            if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-                Security.addProvider(new BouncyCastleProvider());
-                Log.i(TAG, "BouncyCastle installed");
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "BouncyCastle failed", t);
         }
     }
 }
