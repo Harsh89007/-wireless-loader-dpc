@@ -42,5 +42,5 @@ dependencies {
     implementation 'org.conscrypt:conscrypt-android:2.5.3'
 
     // Certificate generation (BouncyCastle के बिना — official libadb तरीका)
-    implementation 'com.github.MuntashirAkon:sun-security-android:1.1'
+    implementation 'com.github.MuntashirAkon:sun-security-android:1.0'
 }
