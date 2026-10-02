@@ -22,10 +22,10 @@ import io.github.muntashirakon.adb.AbsAdbConnectionManager;
 import io.github.muntashirakon.adb.AdbStream;
 
 /**
- * Reference APK style:
- * SEARCH → auto IP + pairing port
- * User only types 6-digit code
- * One button → pair → auto find connect port → connect → set device owner
+ * Fast path (reference style):
+ * SEARCH → IP + pair port auto
+ * User enters only 6-digit code
+ * PAIR → connect port auto (fast) → connect → device owner
  */
 public class AdbHelper {
 
@@ -54,7 +54,7 @@ public class AdbHelper {
         StringWriter sw = new StringWriter();
         t.printStackTrace(new PrintWriter(sw));
         String s = sw.toString();
-        return s.length() > 600 ? s.substring(0, 600) + "…" : s;
+        return s.length() > 500 ? s.substring(0, 500) + "…" : s;
     }
 
     public static Result pair(Context context, String host, int pairPort, String code) {
@@ -76,7 +76,7 @@ public class AdbHelper {
         try {
             AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
             mgr.setHostAddress(host);
-            mgr.setTimeout(25, TimeUnit.SECONDS);
+            mgr.setTimeout(12, TimeUnit.SECONDS);
             boolean connected = mgr.connect(connectPort);
             if (connected) {
                 return new Result(true, "Connected ✅ " + host + ":" + connectPort);
@@ -84,21 +84,20 @@ public class AdbHelper {
             return new Result(false, "Connect failed ❌ " + host + ":" + connectPort);
         } catch (Throwable t) {
             Log.e(TAG, "connect failed", t);
-            return new Result(false, "Connect error:\n" + t.getClass().getSimpleName()
-                    + ": " + t.getMessage());
+            return new Result(false, "Connect error: " + t.getMessage());
         }
     }
 
     /**
-     * Continuous mDNS for connect service — collects all host:port seen.
+     * Fast mDNS: stop as soon as preferred host is resolved (or timeout).
      */
     private static List<String[]> collectConnectEndpoints(Context context, String preferredHost,
-                                                          long totalMs) {
+                                                          long timeoutMs) {
         Set<String> seen = new LinkedHashSet<>();
         List<String[]> list = new ArrayList<>();
-        long end = System.currentTimeMillis() + totalMs;
-        AdbDiscovery discovery = new AdbDiscovery(context);
+        CountDownLatch preferredFound = new CountDownLatch(1);
         AtomicBoolean stop = new AtomicBoolean(false);
+        AdbDiscovery discovery = new AdbDiscovery(context);
 
         discovery.start(AdbDiscovery.TYPE_CONNECT, new AdbDiscovery.Listener() {
             @Override
@@ -109,6 +108,9 @@ public class AdbHelper {
                     if (seen.add(key)) {
                         list.add(new String[]{host, String.valueOf(port)});
                         Log.d(TAG, "mDNS connect: " + key);
+                        if (preferredHost != null && preferredHost.equals(host)) {
+                            preferredFound.countDown();
+                        }
                     }
                 }
             }
@@ -119,108 +121,26 @@ public class AdbHelper {
 
             @Override
             public void onError(String message) {
-                Log.w(TAG, "discover err: " + message);
+                Log.w(TAG, "discover: " + message);
             }
         });
 
-        // Poll in rounds while discovery runs
-        while (System.currentTimeMillis() < end) {
-            try {
-                Thread.sleep(1500);
-            } catch (InterruptedException ignored) {
-                break;
+        try {
+            // Exit early when preferred host appears
+            preferredFound.await(timeoutMs, TimeUnit.MILLISECONDS);
+            // Tiny settle so resolve completes
+            if (preferredFound.getCount() == 0) {
+                Thread.sleep(300);
             }
-            // If we already have preferred host, can exit early after a bit
-            synchronized (seen) {
-                if (preferredHost != null) {
-                    for (String[] ep : list) {
-                        if (preferredHost.equals(ep[0])) {
-                            // keep scanning a little more then stop
-                            if (System.currentTimeMillis() + 3000 >= end) {
-                                stop.set(true);
-                            }
-                        }
-                    }
-                }
-            }
+        } catch (InterruptedException ignored) {
         }
         stop.set(true);
         discovery.stop();
         return list;
     }
 
-    /**
-     * After pair: long auto-search for connect port (reference APK style).
-     * Customer must keep Wireless debugging MAIN screen open (not only pairing dialog).
-     */
-    public static Result tryConnectAfterPair(Context context, String pairHost) {
-        StringBuilder log = new StringBuilder();
-        log.append("Connect port auto खोज रहे हैं...\n");
-        log.append("(Customer: Wireless debugging खुला रखें)\n");
-
-        // Short settle after pair dialog closes
-        try {
-            Thread.sleep(2000);
-        } catch (InterruptedException ignored) {
-        }
-
-        // Round 1: 20s continuous mDNS
-        List<String[]> endpoints = collectConnectEndpoints(context, pairHost, 20000);
-        Result r = tryEndpoints(context, pairHost, endpoints, log);
-        if (r.ok) return r;
-
-        // Round 2: another 20s (service often appears late)
-        log.append("दोबारा खोज...\n");
-        try {
-            Thread.sleep(1500);
-        } catch (InterruptedException ignored) {
-        }
-        endpoints = collectConnectEndpoints(context, pairHost, 20000);
-        r = tryEndpoints(context, pairHost, endpoints, log);
-        if (r.ok) return r;
-
-        // Round 3: libadb autoConnect if available
-        try {
-            AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
-            mgr.setHostAddress(pairHost);
-            mgr.setTimeout(15, TimeUnit.SECONDS);
-            // Some libadb versions: autoConnect(context, timeoutMs)
-            try {
-                java.lang.reflect.Method m = mgr.getClass().getMethod(
-                        "autoConnect", Context.class, long.class);
-                Object ok = m.invoke(mgr, context, 15000L);
-                if (Boolean.TRUE.equals(ok) || (ok instanceof Boolean && (Boolean) ok)) {
-                    log.append("autoConnect ✅\n");
-                    return new Result(true, log + "Connected ✅ (auto)");
-                }
-            } catch (NoSuchMethodException ignored) {
-                try {
-                    java.lang.reflect.Method m2 = AbsAdbConnectionManager.class
-                            .getMethod("autoConnect", Context.class, long.class);
-                    Object ok = m2.invoke(mgr, context, 15000L);
-                    if (Boolean.TRUE.equals(ok)) {
-                        log.append("autoConnect ✅\n");
-                        return new Result(true, log + "Connected ✅ (auto)");
-                    }
-                } catch (Exception ignored2) {
-                }
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "autoConnect skip: " + t.getMessage());
-        }
-
-        return new Result(false,
-                log + "\nConnect port auto नहीं मिला।\n\n"
-                        + "Customer फोन:\n"
-                        + "Settings → Developer options → Wireless debugging\n"
-                        + "मुख्य स्क्रीन खुली रखो (Pair dialog नहीं)।\n"
-                        + "वहाँ IP:PORT दिखेगा → सिर्फ PORT नीचे डालो।",
-                true);
-    }
-
     private static Result tryEndpoints(Context context, String pairHost,
                                        List<String[]> endpoints, StringBuilder log) {
-        // Prefer same host as pairing IP
         for (String[] ep : endpoints) {
             String h = ep[0];
             int p;
@@ -233,9 +153,7 @@ public class AdbHelper {
             log.append("Trying ").append(h).append(":").append(p).append("\n");
             Result c = connect(context, h, p);
             if (c.ok) return new Result(true, log + c.message);
-            log.append("  fail\n");
         }
-        // Any other host
         for (String[] ep : endpoints) {
             String h = ep[0];
             int p;
@@ -248,29 +166,72 @@ public class AdbHelper {
             log.append("Trying ").append(h).append(":").append(p).append("\n");
             Result c = connect(context, h, p);
             if (c.ok) return new Result(true, log + c.message);
-            log.append("  fail\n");
-        }
-        if (endpoints.isEmpty()) {
-            log.append("(mDNS पर कोई connect service नहीं)\n");
         }
         return new Result(false, log.toString());
     }
 
     /**
-     * Full one-button flow: pair → auto connect → grant
-     * Connect discovery starts in parallel during pair when possible.
+     * Fast auto-connect after pair (target ~2–6s when network OK).
      */
+    public static Result tryConnectAfterPair(Context context, String pairHost) {
+        StringBuilder log = new StringBuilder();
+        log.append("Connect port auto...\n");
+
+        // Very short settle after pair dialog closes
+        try {
+            Thread.sleep(600);
+        } catch (InterruptedException ignored) {
+        }
+
+        // Fast round: up to 6s, exits early on preferred host
+        List<String[]> endpoints = collectConnectEndpoints(context, pairHost, 6000);
+        Result r = tryEndpoints(context, pairHost, endpoints, log);
+        if (r.ok) return r;
+
+        // Second short round: 5s
+        log.append("Retry...\n");
+        endpoints = collectConnectEndpoints(context, pairHost, 5000);
+        r = tryEndpoints(context, pairHost, endpoints, log);
+        if (r.ok) return r;
+
+        // Optional autoConnect
+        try {
+            AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
+            mgr.setHostAddress(pairHost);
+            mgr.setTimeout(8, TimeUnit.SECONDS);
+            try {
+                java.lang.reflect.Method m = mgr.getClass()
+                        .getMethod("autoConnect", Context.class, long.class);
+                Object ok = m.invoke(mgr, context, 8000L);
+                if (Boolean.TRUE.equals(ok)) {
+                    return new Result(true, log + "Connected ✅ (auto)");
+                }
+            } catch (NoSuchMethodException ignored) {
+            }
+        } catch (Throwable ignored) {
+        }
+
+        return new Result(false,
+                log + "Connect port नहीं मिला।\n"
+                        + "Wireless debugging मुख्य स्क्रीन खुली रखें।\n"
+                        + "या PORT manually डालें।",
+                true);
+    }
+
     public static Result pairConnectAndGrant(Context context, String host, int pairPort, String code) {
         StringBuilder log = new StringBuilder();
 
-        // Start connect discovery in background BEFORE pair finishes
-        // so we don't miss early mDNS after dialog closes
+        // Pre-scan connect mDNS WHILE pairing (saves time after pair)
         AtomicReference<List<String[]>> preFound = new AtomicReference<>(new ArrayList<>());
+        AtomicBoolean preDone = new AtomicBoolean(false);
         Thread preScan = new Thread(() -> {
             try {
-                List<String[]> found = collectConnectEndpoints(context, host, 45000);
+                // Long enough to cover pair + dialog close
+                List<String[]> found = collectConnectEndpoints(context, host, 25000);
                 preFound.set(found);
             } catch (Throwable ignored) {
+            } finally {
+                preDone.set(true);
             }
         }, "pre-connect-scan");
         preScan.start();
@@ -282,9 +243,9 @@ public class AdbHelper {
             return new Result(false, log.toString());
         }
 
-        // Prefer endpoints found during/after pair
+        // Use anything pre-scan already found (often ready right after pair)
         try {
-            preScan.join(8000);
+            Thread.sleep(400);
         } catch (InterruptedException ignored) {
         }
 
@@ -297,6 +258,24 @@ public class AdbHelper {
                 Result grant = grantOwnership(context);
                 log.append(grant.message);
                 return new Result(grant.ok, log.toString());
+            }
+        }
+
+        // Wait a bit more for pre-scan if still running
+        if (!preDone.get()) {
+            try {
+                preScan.join(4000);
+            } catch (InterruptedException ignored) {
+            }
+            early = preFound.get();
+            if (early != null && !early.isEmpty()) {
+                Result c = tryEndpoints(context, host, early, log);
+                if (c.ok) {
+                    log.append(c.message).append("\n");
+                    Result grant = grantOwnership(context);
+                    log.append(grant.message);
+                    return new Result(grant.ok, log.toString());
+                }
             }
         }
 
@@ -330,7 +309,6 @@ public class AdbHelper {
         } catch (Exception e) {
             Log.w(TAG, "shell:cmd: " + e.getMessage());
         }
-
         AdbStream stream = mgr.openStream("shell:");
         try {
             OutputStream os = stream.openOutputStream();
@@ -348,7 +326,7 @@ public class AdbHelper {
         try {
             InputStream in = stream.openInputStream();
             byte[] buf = new byte[4096];
-            long deadline = System.currentTimeMillis() + 20000;
+            long deadline = System.currentTimeMillis() + 12000;
             while (System.currentTimeMillis() < deadline) {
                 int n;
                 try {
@@ -385,12 +363,10 @@ public class AdbHelper {
             if (pmOut == null) pmOut = "";
             if (!pmOut.contains("package:") && !pmOut.contains("com.harshit")) {
                 return new Result(false,
-                        "Customer app install नहीं।\nपहले Customer APK install करो।\n\npm: "
-                                + (pmOut.isEmpty() ? "(empty)" : pmOut));
+                        "Customer app install नहीं।\nपहले Customer APK install करो।");
             }
 
-            String cmd = "dpm set-device-owner " + TARGET_OWNER;
-            String out = runShell(mgr, cmd);
+            String out = runShell(mgr, "dpm set-device-owner " + TARGET_OWNER);
             if (out == null) out = "";
             String lower = out.toLowerCase();
 
@@ -412,42 +388,30 @@ public class AdbHelper {
 
             if (lower.contains("account")) {
                 return new Result(false,
-                        "Fail: फोन पर Google/Mi account है।\nहटाएँ या factory reset।\n\n" + out);
+                        "Fail: Google/Mi account हटाएँ या factory reset।\n" + out);
             }
-            if (lower.contains("not allowed") || lower.contains("provisioning")
-                    || lower.contains("several users")) {
+            if (lower.contains("not allowed") || lower.contains("provisioning")) {
                 return new Result(false,
-                        "Fail: Owner set नहीं हो सकता इस state में।\n"
-                                + "Factory reset (बिना account) → app install → loader।\n\n" + out);
+                        "Fail: Factory reset (बिना account) → app → loader।\n" + out);
             }
 
             if (out.isEmpty()) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException ignored) {
-                }
                 verify = runShell(mgr, "dumpsys device_policy | grep -i owner");
-                if (verify == null) verify = "";
-                if (verify.toLowerCase().contains("com.harshit.emilocker.customer")
-                        || verify.toLowerCase().contains("device owner")) {
+                if (verify != null && (verify.toLowerCase().contains("com.harshit")
+                        || verify.toLowerCase().contains("device owner"))) {
                     return new Result(true, "Ownership OK ✅\nCustomer App → Sync QR।");
                 }
-                return new Result(false,
-                        "set-device-owner empty।\nCustomer install? Account?\nVerify: "
-                                + (verify.isEmpty() ? "(empty)" : verify));
+                return new Result(false, "Owner set confirm नहीं। Verify: "
+                        + (verify == null || verify.isEmpty() ? "(empty)" : verify));
             }
 
-            return new Result(false, "set-device-owner:\n" + out
-                    + "\n\nlist-owners: " + verify);
+            return new Result(false, "set-device-owner:\n" + out + "\n" + verify);
         } catch (Throwable t) {
             Log.e(TAG, "grant failed", t);
-            String msg = t.getMessage() != null ? t.getMessage() : "";
-            if (msg.toLowerCase().contains("stream closed")) {
-                return new Result(false,
-                        "Shell बंद। दोबारा try।\nCustomer install + बिना Google account।");
+            if (t.getMessage() != null && t.getMessage().toLowerCase().contains("stream closed")) {
+                return new Result(false, "Shell बंद। दोबारा try। Customer install + no account।");
             }
-            return new Result(false, "Grant error:\n" + t.getClass().getSimpleName()
-                    + ": " + msg + "\n\n" + stack(t));
+            return new Result(false, "Grant error: " + t.getMessage());
         }
     }
 }
