@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0F172A"
+    android:padding="20dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Wireless Loader DPC"
+            android:textColor="#38BDF8"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:paddingBottom="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Customer: Wireless debugging → Pair with pairing code (dialog खुला रखो)"
+            android:textColor="#94A3B8"
+            android:textSize="13sp"
+            android:paddingBottom="16dp" />
+
+        <Button
+            android:id="@+id/btnSearch"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="🔍 SEARCH NETWORK"
+            android:backgroundTint="#6366F1"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="14dp" />
+
+        <EditText
+            android:id="@+id/etIp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="IP (auto from Search)"
+            android:inputType="text"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B"
+            android:background="#1E293B"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp" />
+
+        <EditText
+            android:id="@+id/etPairPort"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Pairing Port (auto from Search)"
+            android:inputType="number"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B"
+            android:background="#1E293B"
+            android:padding="14dp"
+            android:layout_marginBottom="10dp" />
+
+        <EditText
+            android:id="@+id/etCode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="6-digit Pairing Code"
+            android:inputType="number"
+            android:maxLength="6"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B"
+            android:background="#1E293B"
+            android:padding="14dp"
+            android:layout_marginBottom="16dp"
+            android:gravity="center"
+            android:textSize="20sp"
+            android:letterSpacing="0.3" />
+
+        <Button
+            android:id="@+id/btnPairTransfer"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="PAIR &amp; TRANSFER OWNERSHIP"
+            android:backgroundTint="#10B981"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Pairing के बाद अगर auto connect fail → यह दिखेगा -->
+        <LinearLayout
+            android:id="@+id/layoutManualConnect"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:id="@+id/tvConnectHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FBBF24"
+                android:textSize="12sp"
+                android:paddingBottom="8dp"
+                android:text="Connect Port: Wireless debugging मुख्य स्क्रीन (IP:PORT)" />
+
+            <EditText
+                android:id="@+id/etConnectPort"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Connect Port (जैसे 45677)"
+                android:inputType="number"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#64748B"
+                android:background="#1E293B"
+                android:padding="14dp"
+                android:layout_marginBottom="10dp" />
+
+            <Button
+                android:id="@+id/btnConnectGrant"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:text="CONNECT &amp; GRANT OWNERSHIP"
+                android:backgroundTint="#F59E0B"
+                android:textColor="#000000"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Status: Idle"
+            android:textColor="#E2E8F0"
+            android:textSize="14sp"
+            android:background="#1E293B"
+            android:padding="14dp"
+            android:minHeight="140dp" />
+    </LinearLayout>
+</ScrollView>
