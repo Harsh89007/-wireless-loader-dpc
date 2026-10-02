@@ -5,6 +5,7 @@ import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
@@ -27,7 +28,6 @@ public class AdbHelper {
     public static class Result {
         public final boolean ok;
         public final String message;
-        /** Pair ok था लेकिन connect port auto नहीं मिला — UI manual port माँगे */
         public final boolean needManualConnectPort;
 
         public Result(boolean ok, String message) {
@@ -45,7 +45,7 @@ public class AdbHelper {
         StringWriter sw = new StringWriter();
         t.printStackTrace(new PrintWriter(sw));
         String s = sw.toString();
-        return s.length() > 1000 ? s.substring(0, 1000) + "…" : s;
+        return s.length() > 800 ? s.substring(0, 800) + "…" : s;
     }
 
     public static Result pair(Context context, String host, int pairPort, String code) {
@@ -80,13 +80,12 @@ public class AdbHelper {
         }
     }
 
-    /**
-     * mDNS से connect ports इकट्ठा करो (remote devices — custom discovery).
-     */
-    public static List<int[]> discoverConnectEndpoints(Context context, String preferredHost, long timeoutMs) {
-        List<int[]> results = new ArrayList<>(); // not used; use string list
-        List<String> hosts = new ArrayList<>();
-        List<Integer> ports = new ArrayList<>();
+    private static final List<String> lastDiscoverHosts = new ArrayList<>();
+    private static final List<Integer> lastDiscoverPorts = new ArrayList<>();
+
+    public static void discoverConnectEndpoints(Context context, String preferredHost, long timeoutMs) {
+        lastDiscoverHosts.clear();
+        lastDiscoverPorts.clear();
         CountDownLatch done = new CountDownLatch(1);
         AtomicBoolean finished = new AtomicBoolean(false);
         AdbDiscovery discovery = new AdbDiscovery(context);
@@ -95,20 +94,20 @@ public class AdbHelper {
             @Override
             public void onFound(String host, int port, String serviceType) {
                 if (finished.get()) return;
-                synchronized (hosts) {
+                synchronized (lastDiscoverHosts) {
                     boolean exists = false;
-                    for (int i = 0; i < hosts.size(); i++) {
-                        if (hosts.get(i).equals(host) && ports.get(i) == port) {
+                    for (int i = 0; i < lastDiscoverHosts.size(); i++) {
+                        if (lastDiscoverHosts.get(i).equals(host)
+                                && lastDiscoverPorts.get(i) == port) {
                             exists = true;
                             break;
                         }
                     }
                     if (!exists) {
-                        hosts.add(host);
-                        ports.add(port);
+                        lastDiscoverHosts.add(host);
+                        lastDiscoverPorts.add(port);
                         Log.d(TAG, "Connect service: " + host + ":" + port);
                     }
-                    // Prefer matching host — can finish early
                     if (preferredHost != null && preferredHost.equals(host)) {
                         finished.set(true);
                         done.countDown();
@@ -133,50 +132,12 @@ public class AdbHelper {
         }
         finished.set(true);
         discovery.stop();
-
-        List<int[]> endpoints = new ArrayList<>();
-        // Prefer preferred host first
-        synchronized (hosts) {
-            for (int i = 0; i < hosts.size(); i++) {
-                if (preferredHost != null && preferredHost.equals(hosts.get(i))) {
-                    endpoints.add(new int[]{i, ports.get(i)}); // marker
-                }
-            }
-        }
-        // Build ordered host:port via parallel lists return as encoded
-        // Simpler: return ports for preferred host, then all
-        List<Integer> orderedPorts = new ArrayList<>();
-        synchronized (hosts) {
-            for (int i = 0; i < hosts.size(); i++) {
-                if (preferredHost != null && preferredHost.equals(hosts.get(i))) {
-                    orderedPorts.add(ports.get(i));
-                }
-            }
-            for (int i = 0; i < hosts.size(); i++) {
-                if (preferredHost == null || !preferredHost.equals(hosts.get(i))) {
-                    // still try same subnet later in caller with host list
-                    orderedPorts.add(ports.get(i));
-                }
-            }
-        }
-        // Store hosts in static for last discovery — cleaner API below
-        lastDiscoverHosts.clear();
-        lastDiscoverPorts.clear();
-        synchronized (hosts) {
-            lastDiscoverHosts.addAll(hosts);
-            lastDiscoverPorts.addAll(ports);
-        }
-        return endpoints;
     }
-
-    private static final List<String> lastDiscoverHosts = new ArrayList<>();
-    private static final List<Integer> lastDiscoverPorts = new ArrayList<>();
 
     public static Result tryConnectAfterPair(Context context, String pairHost) {
         StringBuilder log = new StringBuilder();
         log.append("Connect port खोज रहे हैं...\n");
 
-        // Wait for wireless debugging to advertise connect service after pair dialog closes
         try {
             Thread.sleep(2500);
         } catch (InterruptedException ignored) {
@@ -184,34 +145,27 @@ public class AdbHelper {
 
         discoverConnectEndpoints(context, pairHost, 18000);
 
-        // First: exact host match
         for (int i = 0; i < lastDiscoverHosts.size(); i++) {
             String h = lastDiscoverHosts.get(i);
             int p = lastDiscoverPorts.get(i);
             if (pairHost != null && pairHost.equals(h)) {
                 log.append("Trying ").append(h).append(":").append(p).append("\n");
                 Result c = connect(context, h, p);
-                if (c.ok) {
-                    return new Result(true, log + c.message);
-                }
+                if (c.ok) return new Result(true, log + c.message);
                 log.append(c.message).append("\n");
             }
         }
 
-        // Second: any discovered connect service
         for (int i = 0; i < lastDiscoverHosts.size(); i++) {
             String h = lastDiscoverHosts.get(i);
             int p = lastDiscoverPorts.get(i);
-            if (pairHost != null && pairHost.equals(h)) continue; // already tried
+            if (pairHost != null && pairHost.equals(h)) continue;
             log.append("Trying ").append(h).append(":").append(p).append("\n");
             Result c = connect(context, h, p);
-            if (c.ok) {
-                return new Result(true, log + c.message);
-            }
+            if (c.ok) return new Result(true, log + c.message);
             log.append(c.message).append("\n");
         }
 
-        // Third: retry discovery once more
         try {
             Thread.sleep(2000);
         } catch (InterruptedException ignored) {
@@ -222,23 +176,16 @@ public class AdbHelper {
             int p = lastDiscoverPorts.get(i);
             log.append("Retry ").append(h).append(":").append(p).append("\n");
             Result c = connect(context, h, p);
-            if (c.ok) {
-                return new Result(true, log + c.message);
-            }
+            if (c.ok) return new Result(true, log + c.message);
         }
 
         return new Result(false,
-                log + "Connect port auto नहीं मिला।\n\n"
-                        + "Customer फोन → Wireless debugging स्क्रीन (मुख्य),\n"
-                        + "नीचे IP:PORT दिखता है — सिर्फ PORT नंबर\n"
-                        + "नीचे Connect Port में डालकर CONNECT & GRANT दबाएँ।",
+                log + "Connect port auto नहीं मिला।\n"
+                        + "Wireless debugging मुख्य स्क्रीन से PORT डालकर\n"
+                        + "CONNECT AND GRANT दबाएँ।",
                 true);
     }
 
-    /**
-     * Full flow: pair → auto connect → grant.
-     * अगर connect auto fail → needManualConnectPort=true
-     */
     public static Result pairConnectAndGrant(Context context, String host, int pairPort, String code) {
         StringBuilder log = new StringBuilder();
 
@@ -258,9 +205,6 @@ public class AdbHelper {
         return new Result(grant.ok, log.toString());
     }
 
-    /**
-     * Manual connect port के बाद: connect + grant
-     */
     public static Result connectAndGrant(Context context, String host, int connectPort) {
         StringBuilder log = new StringBuilder();
         Result conn = connect(context, host, connectPort);
@@ -272,52 +216,148 @@ public class AdbHelper {
         return new Result(grant.ok, log.toString());
     }
 
+    /**
+     * Shell command चलाओ। Stream closed = command खत्म (अक्सर normal)।
+     */
+    private static String runShell(AbsAdbConnectionManager mgr, String command) throws Exception {
+        // Method 1: shell:cmd in one openStream
+        try {
+            AdbStream stream = mgr.openStream("shell:" + command);
+            String out = readStreamFully(stream);
+            if (out != null) return out;
+        } catch (Exception e) {
+            Log.w(TAG, "shell:cmd failed: " + e.getMessage());
+        }
+
+        // Method 2: interactive shell + write command
+        AdbStream stream = mgr.openStream("shell:");
+        try {
+            OutputStream os = stream.openOutputStream();
+            os.write((command + "\n").getBytes(StandardCharsets.UTF_8));
+            os.write("exit\n".getBytes(StandardCharsets.UTF_8));
+            os.flush();
+        } catch (Exception e) {
+            Log.w(TAG, "shell write: " + e.getMessage());
+        }
+        return readStreamFully(stream);
+    }
+
+    private static String readStreamFully(AdbStream stream) {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        try {
+            InputStream in = stream.openInputStream();
+            byte[] buf = new byte[4096];
+            long deadline = System.currentTimeMillis() + 20000;
+            while (System.currentTimeMillis() < deadline) {
+                int n;
+                try {
+                    n = in.read(buf);
+                } catch (Exception e) {
+                    // Stream closed / connection reset = remote finished
+                    break;
+                }
+                if (n == -1) break;
+                if (n > 0) bos.write(buf, 0, n);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "readStream: " + e.getMessage());
+        } finally {
+            try {
+                stream.close();
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            return bos.toString(StandardCharsets.UTF_8.name()).trim();
+        } catch (Exception e) {
+            return bos.toString().trim();
+        }
+    }
+
     public static Result grantOwnership(Context context) {
         try {
             AbsAdbConnectionManager mgr = AdbConnectionManager.getInstance(context);
             if (!mgr.isConnected()) {
                 return new Result(false, "ADB connected नहीं है। पहले Connect सफल करें।");
             }
+
+            // Customer app install check
+            String pmOut = runShell(mgr, "pm path com.harshit.emilocker.customer");
+            if (pmOut == null) pmOut = "";
+            if (!pmOut.contains("package:") && !pmOut.contains("com.harshit")) {
+                return new Result(false,
+                        "Customer app install नहीं है इस फोन पर।\n"
+                                + "पहले Customer APK install करो, फिर ownership।\n\n"
+                                + "pm: " + (pmOut.isEmpty() ? "(empty)" : pmOut));
+            }
+
             String cmd = "dpm set-device-owner " + TARGET_OWNER;
-            AdbStream stream = mgr.openStream("shell:" + cmd);
-
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            InputStream in = stream.openInputStream();
-            byte[] buf = new byte[4096];
-            int n;
-            long end = System.currentTimeMillis() + 15000;
-            while (System.currentTimeMillis() < end && (n = in.read(buf)) != -1) {
-                if (n > 0) bos.write(buf, 0, n);
-            }
-            try {
-                stream.close();
-            } catch (Exception ignored) {
-            }
-
-            String out = bos.toString(StandardCharsets.UTF_8.name()).trim();
+            String out = runShell(mgr, cmd);
+            if (out == null) out = "";
             String lower = out.toLowerCase();
 
-            if (lower.contains("success") || lower.contains("device owner") || out.isEmpty()) {
+            // Verify
+            String verify = runShell(mgr, "dpm list-owners");
+            if (verify == null) verify = "";
+            boolean ownerSet = verify.toLowerCase().contains("com.harshit.emilocker.customer")
+                    || lower.contains("success")
+                    || lower.contains("already the device owner");
+
+            if (ownerSet) {
                 return new Result(true,
-                        "Ownership OK ✅\n" + (out.isEmpty() ? "" : out + "\n")
-                                + "Customer App खोलें → Sync QR स्कैन करें।");
+                        "Ownership OK ✅\n"
+                                + (out.isEmpty() ? "" : "out: " + out + "\n")
+                                + "owners: " + (verify.isEmpty() ? "(check app)" : verify)
+                                + "\n\nCustomer App खोलें → Sync QR स्कैन करें।");
             }
+
             if (lower.contains("already the device owner")) {
                 return new Result(true, "पहले से Device Owner ✅\n" + out);
             }
-            if (lower.contains("account")) {
+            if (lower.contains("account") || verify.toLowerCase().contains("account")) {
                 return new Result(false,
-                        "Fail: फोन पर Google/Mi अकाउंट है। हटाएँ / factory reset।\n\n" + out);
+                        "Fail: फोन पर Google/Mi अकाउंट है।\nहटाएँ या factory reset।\n\n" + out);
             }
-            if (lower.contains("not allowed") || lower.contains("provisioning")) {
+            if (lower.contains("not allowed") || lower.contains("provisioning")
+                    || lower.contains("several users") || lower.contains("user")) {
                 return new Result(false,
-                        "Fail: Owner set नहीं हो सकता इस स्टेट में।\nFactory reset (बिना अकाउंट)।\n\n" + out);
+                        "Fail: इस स्टेट में Owner set नहीं हो सकता।\n"
+                                + "Factory reset (बिना अकाउंट) → app install → फिर loader।\n\n" + out);
             }
-            return new Result(false, "set-device-owner:\n" + (out.isEmpty() ? "(no output)" : out));
+
+            // Stream closed with empty output — often still worked; check owners again
+            if (out.isEmpty()) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ignored) {
+                }
+                verify = runShell(mgr, "dumpsys device_policy | grep -i owner");
+                if (verify == null) verify = "";
+                if (verify.toLowerCase().contains("com.harshit.emilocker.customer")
+                        || verify.toLowerCase().contains("device owner")) {
+                    return new Result(true, "Ownership OK ✅ (verified)\n" + verify);
+                }
+                return new Result(false,
+                        "set-device-owner कोई output नहीं दिया।\n"
+                                + "Customer app install है? अकाउंट तो नहीं?\n"
+                                + "Verify: " + (verify.isEmpty() ? "(empty)" : verify));
+            }
+
+            return new Result(false, "set-device-owner:\n" + out
+                    + "\n\nlist-owners: " + verify);
         } catch (Throwable t) {
             Log.e(TAG, "grant failed", t);
+            String msg = t.getMessage() != null ? t.getMessage() : "";
+            // Stream closed alone is not always failure — rare path
+            if (msg.toLowerCase().contains("stream closed")) {
+                return new Result(false,
+                        "Shell stream बंद हो गया।\n"
+                                + "दोबारा PAIR AND TRANSFER try करो।\n"
+                                + "Customer app install + बिना Google account होना ज़रूरी।\n\n"
+                                + stack(t));
+            }
             return new Result(false, "Grant error:\n" + t.getClass().getSimpleName()
-                    + ": " + t.getMessage() + "\n\n" + stack(t));
+                    + ": " + msg + "\n\n" + stack(t));
         }
     }
 }
